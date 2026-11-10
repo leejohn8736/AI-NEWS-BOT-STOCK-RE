@@ -1,0 +1,32 @@
+name: Stock Screener Multi-Schedule Bot
+
+on:
+  schedule:
+    # 한국 시간 기준 월~금 15:10, 17:10, 18:10 자동 실행 (UTC 기준 06:10, 08:10, 09:10)
+    - cron: "10 6,8,9 * * 1-5"
+  workflow_dispatch: # 깃허브 웹 화면에서 수동 [Run workflow] 버튼으로도 테스트 가능
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Theme Screener and Send Telegram Alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
