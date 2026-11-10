@@ -1,0 +1,8 @@
+streamlit
+FinanceDataReader
+pandas
+requests
+pytz
+beautifulsoup4
+numpy
+yfinance
