@@ -1,4 +1,4 @@
-name: Stock Screener Multi-Schedule Bot
+name: End-of-day-betting Bot
 
 on:
   schedule:
