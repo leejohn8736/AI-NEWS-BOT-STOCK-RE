@@ -1,207 +1,194 @@
-"""
-종가 주식 스크리너 - 네이버 금융 기반 실시간 테마 및 안정적 크롤링 메인 스크립트
-"""
-from __future__ import annotations
-
 import os
-import re
+import sys
+import json
 import time
-from datetime import datetime
-from pathlib import Path
+import html
+import urllib.request
+import urllib.parse
+from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
+from google import genai
 
-import numpy as np
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+# 1. Secrets에서 설정값 불러오기
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 디렉토리 설정
-BASE_DIR = Path(__file__).resolve().parent
-STATE_DIR = BASE_DIR / "state"
-STATE_DIR.mkdir(exist_ok=True)
+# 2. 감시할 키워드 목록
+KEYWORDS = [
+    "삼성전자", "AI", "반도체", "증권", "부동산",
+    "금리", "주식", "현대차", "SK하이닉스", "배터리"
+]
 
-# ----------------------------------------------------------------------
-# 1. 텔레그램 메시지 전송 함수
-# ----------------------------------------------------------------------
-def send_telegram_msg(message: str) -> bool:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    
-    if not token or not chat_id:
-        print("[경고] TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
+SENT_LINKS_FILE = "sent_links.txt"
+
+def load_sent_links():
+    if os.path.exists(SENT_LINKS_FILE):
+        with open(SENT_LINKS_FILE, "r", encoding="utf-8") as f:
+            return set(line.strip() for line in f if line.strip())
+    return set()
+
+def save_sent_links(sent_links):
+    with open(SENT_LINKS_FILE, "w", encoding="utf-8") as f:
+        for link in sent_links:
+            f.write(f"{link}\n")
+
+def send_telegram_msg(text):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ 텔레그램 설정값이 없습니다.")
         return False
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
     }
+    
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+    
     try:
-        res = requests.post(url, json=payload, timeout=10)
-        if res.status_code == 200:
-            print("텔레그램 알림 발송 성공!")
+        with urllib.request.urlopen(req, timeout=10) as response:
             return True
-        else:
-            print(f"텔레그램 발송 실패: {res.text}")
-            return False
     except Exception as e:
-        print(f"텔레그램 전송 예외 발생: {e}")
+        print(f"❌ 텔레그램 발송 오류: {e}")
         return False
 
-# ----------------------------------------------------------------------
-# 2. 네이버 금융 주도 테마 및 종목 수집
-# ----------------------------------------------------------------------
-def fetch_today_hot_themes(top_n_themes: int = 5) -> dict[str, list[dict[str, str]]]:
-    url = "https://finance.naver.com/sise/theme.naver"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+def fetch_rss_news(keyword):
+    """최근 15분 이내 뉴스만 수집"""
+    encoded_keyword = urllib.parse.quote(keyword)
+    rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
     
-    theme_data = {}
+    req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
+    articles = []
+    kst = timezone(timedelta(hours=9))
+    now_kst = datetime.now(kst)
+    
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, "html.parser")
-        
-        theme_rows = soup.select("table.type_1 tr")
-        top_themes = []
-        
-        for row in theme_rows:
-            col = row.select("td.col_type1 a")
-            rate_col = row.select("td.col_type2")
-            if col and rate_col:
-                t_name = col[0].text.strip()
-                t_link = "https://finance.naver.com" + col[0]["href"]
-                t_rate = rate_col[0].text.strip()
-                top_themes.append({"name": t_name, "link": t_link, "rate": t_rate})
-                if len(top_themes) >= top_n_themes:
-                    break
-        
-        for theme in top_themes:
-            try:
-                t_res = requests.get(theme["link"], headers=headers, timeout=10)
-                t_soup = BeautifulSoup(t_res.text, "html.parser")
-                stock_rows = t_soup.select("table.type_5 tr")
-                
-                stocks_in_theme = []
-                for s_row in stock_rows:
-                    name_cell = s_row.select("td.name a")
-                    if name_cell:
-                        s_name = name_cell[0].text.strip()
-                        code_match = re.search(r"code=(\d+)", name_cell[0]["href"])
-                        s_code = code_match.group(1) if code_match else ""
-                        if s_code:
-                            stocks_in_theme.append({"code": s_code, "name": s_name})
-                
-                theme_data[theme["name"]] = {
-                    "rate": theme["rate"],
-                    "stocks": stocks_in_theme[:7]
-                }
-                time.sleep(0.2)
-            except Exception:
-                continue
+        with urllib.request.urlopen(req, timeout=10) as response:
+            xml_data = response.read().decode('utf-8')
+            items = xml_data.split('<item>')
             
+            for item in items[1:]:
+                pub_date_str = ""
+                if '<pubDate>' in item and '</pubDate>' in item:
+                    pub_date_str = item.split('<pubDate>')[1].split('</pubDate>')[0].strip()
+                
+                is_within_15_min = False
+                pub_formatted = ""
+                
+                if pub_date_str:
+                    try:
+                        dt = parsedate_to_datetime(pub_date_str).astimezone(kst)
+                        pub_formatted = dt.strftime("%H:%M")
+                        time_diff_seconds = (now_kst - dt).total_seconds()
+                        
+                        if 0 <= time_diff_seconds <= 900:  # 15분 이내
+                            is_within_15_min = True
+                    except Exception:
+                        pass
+                
+                if not is_within_15_min:
+                    continue
+
+                title = ""
+                if '<title>' in item and '</title>' in item:
+                    title = item.split('<title>')[1].split('</title>')[0]
+                    title = title.replace('<![CDATA[', '').replace(']]>', '').strip()
+                
+                link = ""
+                if '<link>' in item and '</link>' in item:
+                    link = item.split('<link>')[1].split('</link>')[0].strip()
+                
+                source = "언론사 미상"
+                if '<source' in item and '</source>' in item:
+                    source = item.split('>')[1].split('</source>')[0].strip()
+
+                if keyword in title and link:
+                    articles.append({
+                        'keyword': keyword,
+                        'title': title,
+                        'link': link,
+                        'source': source,
+                        'pub_time': pub_formatted
+                    })
     except Exception as e:
-        print(f"테마 데이터 수집 중 오류 발생: {e}")
+        print(f"❌ [{keyword}] 뉴스 수집 실패: {e}")
         
-    return theme_data
+    return articles
 
-# ----------------------------------------------------------------------
-# 3. 야후 파이낸스 기반 개별 종목 데이터 분석 (한국 종목은 .KS / .KQ 부착)
-# ----------------------------------------------------------------------
-def get_stock_history_yf(code: str):
-    """
-    야후 파이낸스를 통해 종목 일봉 데이터를 안전하게 가져옵니다.
-    코스피는 .KS, 코스닥은 .KQ를 시도합니다.
-    """
-    import yfinance as yf
-    for suffix in [".KS", ".KQ"]:
-        ticker_symbol = code + suffix
-        try:
-            df = yf.download(ticker_symbol, period="6mo", progress=False, auto_adjust=True)
-            if not df.empty and len(df) > 30:
-                # MultiIndex 컬럼 평탄화 방어
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                return df
-        except Exception:
-            continue
-    return None
+def generate_ai_briefing(articles_list):
+    """Gemini 3.6 Flash 모델을 사용하여 브리핑 작성"""
+    if not GEMINI_API_KEY:
+        print("⚠️ GEMINI_API_KEY가 없어 기본 목록 형태로 발송합니다.")
+        return None
 
-# ----------------------------------------------------------------------
-# 4. 메인 스크리닝 및 알림 로직
-# ----------------------------------------------------------------------
-def run_theme_stock_screener():
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    print(f"[{now_str}] 실시간 테마 주도주 종가 스크리닝 시작...")
-    
-    hot_themes = fetch_today_hot_themes(top_n_themes=5)
-    
-    theme_stock_map = {}
-    for t_name, t_info in hot_themes.items():
-        for s in t_info["stocks"]:
-            theme_stock_map[s["code"]] = {
-                "name": s["name"],
-                "theme": t_name,
-                "theme_rate": t_info["rate"]
-            }
-            
-    print(f"포착된 상위 주도 테마 수: {len(hot_themes)}개 (총 {len(theme_stock_map)}개 종목 검토)")
+    news_text_block = ""
+    for idx, item in enumerate(articles_list, 1):
+        news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({item['source']}, {item['pub_time']})\n"
 
-    matched_results = []
+    prompt = f"""
+다음은 방금 수집된 실시간 뉴스 목록입니다.
+이 뉴스들을 바탕으로 텔레그램으로 보낼 '실시간 AI 뉴스 브리핑'을 작성해 주세요.
+
+[뉴스 목록]
+{news_text_block}
+
+[작성 조건]
+1. HTML 태그(<b>, <i> 등)를 적절히 활용하여 읽기 쉽게 가독성을 높일 것.
+2. 상단에 🤖 <b>[AI 실시간 뉴스 브리핑]</b> 제목을 붙일 것.
+3. 주요 뉴스들을 핵심 주제별로 2~3문장 내외로 명확하게 요약 정리할 것.
+4. 문맥이 매끄럽고 보고서처럼 인사이트를 줄 수 있도록 정리할 것.
+"""
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        # 최신 지정 표준 모델명 'gemini-3.6-flash' 사용
+        response = client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=prompt,
+        )
+        return response.text
+    except Exception as e:
+        print(f"❌ Gemini AI 요약 생성 실패: {e}")
+        return None
+
+def main():
+    print("🚀 실시간 뉴스 수집 및 AI 브리핑 로봇 실행...")
+    sent_links = load_sent_links()
+    collected_articles = []
     
-    for code, info in theme_stock_map.items():
-        try:
-            df_stock = get_stock_history_yf(code)
-            if df_stock is None or len(df_stock) < 20:
-                continue
-                
-            df_stock["SMA5"] = df_stock["Close"].rolling(5).mean()
-            df_stock["SMA20"] = df_stock["Close"].rolling(20).mean()
-            df_stock["Amount"] = df_stock["Close"] * df_stock["Volume"]
-            avg_amount_20 = df_stock["Amount"].tail(20).mean()
-            
-            recent = df_stock.iloc[-1]
-            prev = df_stock.iloc[-2]
-            
-            volume_ratio = (recent["Volume"] / df_stock["Volume"].tail(20).mean()) * 100
-            is_bullish_ma = recent["SMA5"] >= recent["SMA20"]
-            is_volume_spike = volume_ratio >= 130 # 거래량 130% 이상 급증
-            
-            # 조건 검증 (20일 평균 거래대금 20억 이상 및 기술적 조건)
-            if avg_amount_20 >= 2_000_000_000 and (is_bullish_ma or is_volume_spike):
-                matched_results.append({
-                    "code": code,
-                    "name": info["name"],
-                    "theme": info["theme"],
-                    "close": int(recent["Close"]),
-                    "change_rate": round(((recent["Close"] - prev["Close"]) / prev["Close"]) * 100, 2),
-                    "amount_bg": round(avg_amount_20 / 100_000_000, 1),
-                    "vol_ratio": round(volume_ratio, 1)
-                })
-        except Exception as e:
-            print(f"종목 {code} 분석 중 예외: {e}")
-            continue
-            
-    matched_results.sort(key=lambda x: x["change_rate"], reverse=True)
+    for keyword in KEYWORDS:
+        articles = fetch_rss_news(keyword)
+        for article in articles:
+            if article['link'] not in sent_links:
+                collected_articles.append(article)
+
+    if not collected_articles:
+        print("ℹ️ 최근 15분 이내 신규 뉴스가 없습니다.")
+        return
+
+    ai_briefing = generate_ai_briefing(collected_articles)
     
-    if matched_results:
-        msg = f"🔥 *[종가 주식 스크리너 리포트]* ({now_str})\n\n"
-        current_theme = ""
-        for item in matched_results[:10]:
-            if item["theme"] != current_theme:
-                current_theme = item["theme"]
-                msg += f"\n📌 *테마: {current_theme}*\n"
-                
-            flag = "🔺" if item["change_rate"] > 0 else "🔻"
-            msg += (
-                f"• *{item['name']}* ({item['code']})\n"
-                f"  - 현재가: {item['close']:,}원 ({flag}{item['change_rate']}%)\n"
-                f"  - 20일 평균거래대금: {item['amount_bg']}억원\n"
-            )
+    if ai_briefing:
+        message = ai_briefing + "\n\n<b>📌 관련 기사 링크:</b>\n"
+        for item in collected_articles:
+            safe_title = html.escape(item['title'])
+            message += f"• <a href='{item['link']}'>{safe_title}</a>\n"
     else:
-        msg = f"ℹ️ *[종가 주식 스크리너]* ({now_str})\n현재 조건에 부합하는 주도 테마 종목이 없습니다."
+        message = "🚨 <b>[실시간 신규 뉴스 모음]</b>\n\n"
+        for item in collected_articles:
+            safe_title = html.escape(item['title'])
+            safe_kw = html.escape(item['keyword'])
+            message += f"<b>[{safe_kw}]</b> {safe_title}\n🔗 <a href='{item['link']}'>기사 보기</a>\n\n"
 
-    print(msg)
-    send_telegram_msg(msg)
+    if send_telegram_msg(message):
+        for item in collected_articles:
+            sent_links.add(item['link'])
+        save_sent_links(sent_links)
+        print(f"🎉 총 {len(collected_articles)}건의 뉴스를 브리핑하여 발송 완료했습니다.")
 
 if __name__ == "__main__":
-    run_theme_stock_screener()
+    main()
