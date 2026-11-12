@@ -1,4 +1,4 @@
-name: Realtime News Notification Bot
+name: 실시간 키워드 뉴스
 
 on:
   workflow_dispatch: # <--- 이 코드가 있어야 'Run workflow' 버튼이 생깁니다!
