@@ -5,18 +5,12 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from flask import Flask, request, abort
 from google import genai
-
-app = Flask(__name__)
 
 # 1. 환경 변수에서 설정값 불러오기
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-# 🔒 cron-job.org만 알 수 있는 나만의 비밀 열쇠 (원하는 영어/숫자로 변경 가능)
-CRON_SECRET_KEY = os.environ.get("CRON_SECRET_KEY", "my_secret_key_1234")
 
 # 2. 감시할 키워드 목록
 KEYWORDS = [
@@ -170,7 +164,6 @@ def generate_ai_briefing(articles_list, is_odd_turn):
         news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({safe_src}, {item['pub_time']})\n"
 
     if is_odd_turn:
-        # 홀수 회차: 뉴스 브리핑 + 핵심 요약 + 테마 및 섹터 정리
         prompt = f"""
 다음은 방금 수집된 실시간 뉴스 목록입니다.
 이 뉴스들을 바탕으로 텔레그램으로 보낼 '실시간 AI 뉴스 브리핑'을 작성해 주세요.
@@ -180,12 +173,11 @@ def generate_ai_briefing(articles_list, is_odd_turn):
 
 [작성 조건]
 1. 상단에 🤖 <b>[AI 실시간 뉴스 브리핑 & 테마/섹터 분석]</b> 제목을 붙일 것.
-2. 수집된 뉴스들을 바탕으로 주요 소식을 테마와 섹터별로 묶어 정리할 것.
+2. 수집된 뉴스들을 테마와 섹터별로 묶어 정리할 것.
 3. 각 뉴스(또는 테마별 그룹)마다 **핵심 요약(2~3문장)**과 함께 해당 뉴스가 속한 **[테마] 및 [섹터]**를 명시할 것.
 4. HTML 태그(<b>, <i> 등)를 적극 활용하여 가독성을 높일 것.
 """
     else:
-        # 짝수 회차: 코스피 5개, 코스닥 5개 (대형주 제외, 일반 중소형주 수혜주 추천)
         prompt = f"""
 다음은 최근 수집된 시장 뉴스 데이터입니다.
 이 데이터를 참고하여 현재 시점에서 주목할 만한 양호한 주식 종목을 추천해 주세요.
@@ -209,13 +201,16 @@ def generate_ai_briefing(articles_list, is_odd_turn):
         print(f"❌ Gemini AI 콘텐츠 생성 실패: {mask_sensitive_info(str(e))}")
         return None
 
-def run_news_bot():
+def main():
+    print("🚀 실시간 뉴스 수집 및 AI 브리핑 로봇 실행...")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return "환경 변수 누락"
+        print("🚨 필수 보안 설정: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다.")
+        return
 
     current_run = load_run_count() + 1
     save_run_count(current_run)
     is_odd_turn = (current_run % 2 != 0)
+    print(f"ℹ️ 현재 실행 회차: {current_run}회차 ({'홀수 - 뉴스 브리핑' if is_odd_turn else '짝수 - 수혜주 추천'})")
 
     sent_links = load_sent_links()
     collected_articles = []
@@ -227,7 +222,8 @@ def run_news_bot():
                 collected_articles.append(article)
 
     if not collected_articles and is_odd_turn:
-        return f"{current_run}회차: 신규 뉴스 없음"
+        print("ℹ️ 최근 15분 이내 신규 뉴스가 없습니다.")
+        return
 
     ai_content = generate_ai_briefing(collected_articles, is_odd_turn)
     
@@ -250,18 +246,7 @@ def run_news_bot():
             for item in collected_articles:
                 sent_links.add(item['link'])
             save_sent_links(sent_links)
-        return f"{current_run}회차 발송 성공!"
-    return "텔레그램 발송 실패"
-
-# 🌐 cron-job.org가 접속할 웹 주소 경로
-@app.route('/run')
-def trigger_bot():
-    user_key = request.args.get('key')
-    if user_key != CRON_SECRET_KEY:
-        abort(403)
-        
-    result = run_news_bot()
-    return f"OK - {result}", 200
+        print(f"🎉 {current_run}회차 메시지 발송 완료했습니다.")
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    main()
