@@ -76,7 +76,6 @@ def send_telegram_msg(text):
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    # 텔레그램 글자 수 제한(4096자) 방어를 위해 3800자로 자름
     if len(text) > 3800:
         text = text[:3800] + "\n\n...(내용이 길어 생략됩니다)"
 
@@ -164,8 +163,7 @@ def generate_ai_integrated_report(articles_list):
         return None
 
     news_text_block = ""
-    # 너무 많은 뉴스가 들어가면 글자 수가 초과되므로 상위 15개만 추려서 전달
-    for idx, item in enumerate(articles_list[:15], 1):
+    for idx, item in enumerate(articles_list[:12], 1):
         safe_src = html.escape(item['source'])
         news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({safe_src}, {item['pub_time']})\n"
 
@@ -179,10 +177,10 @@ def generate_ai_integrated_report(articles_list):
 1. 상단에 🤖 <b>[AI 실시간 뉴스 & 테마/섹터 분석]</b> 제목을 붙일 것.
 2. 핵심 이슈를 **[테마] 및 [섹터]**별로 간단히 요약할 것.
 3. 하단에 📈 <b>[시장 수혜주 추천]</b> 섹션을 추가할 것.
-4. 대형주는 제외하고 일반 중소형주 위주로 선정할 것:
-   - **[코스피 수혜주]** (총 10개: 1등주 5개, 2등주 5개 - 종목명 위주로 간결하게)
-   - **[코스닥 수혜주]** (총 10개: 1등주 5개, 2등주 5개 - 종목명 위주로 간결하게)
-5. 텔레그램 전송용이므로 전체 분량이 너무 길어지지 않게 핵심만 압축해서 작성할 것.
+4. 시가총액 상위 대형주는 철저히 제외하고, 성장성 있는 일반 중소형주 위주로 선정할 것:
+   - **[코스피 수혜주]** (총 10개: 1등주 5개, 2등주 5개)
+   - **[코스닥 수혜주]** (총 10개: 1등주 5개, 2등주 5개)
+5. 텔레그램 전송용이므로 분량이 너무 길어지지 않게 핵심만 압축해서 작성할 것.
 """
 
     try:
@@ -193,10 +191,24 @@ def generate_ai_integrated_report(articles_list):
         )
         return response.text
     except Exception as e:
-        print(f"❌ Gemini AI 콘텐츠 생성 실패: {mask_sensitive_info(str(e))}")
+        print(f"⚠️ Gemini AI 호출 제한 또는 에러 발생 (기본 뉴스 모음으로 대체됩니다): {mask_sensitive_info(str(e))}")
         return None
 
 def main():
+    # 🕒 운영 시간 체크 (새벽 4시 ~ 밤 11시 50분 KST)
+    kst = timezone(timedelta(hours=9))
+    now_kst = datetime.now(kst)
+    current_hour = now_kst.hour
+    current_minute = now_kst.minute
+    current_total_minutes = current_hour * 60 + current_minute
+
+    start_minutes = 4 * 60          # 새벽 4시 (240분)
+    end_minutes = 23 * 60 + 50      # 밤 11시 50분 (1430분)
+
+    if not (start_minutes <= current_total_minutes <= end_minutes):
+        print(f"😴 현재 시각({now_kst.strftime('%H:%M')})은 설정된 운영 시간(04:00 ~ 23:50)이 아닙니다. 대기합니다.")
+        return
+
     print("🚀 실시간 뉴스 수집 및 통합 AI 리포트 로봇 실행...")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("🚨 필수 보안 설정: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다.")
@@ -225,13 +237,12 @@ def main():
         message = ai_content
         if collected_articles:
             message += "\n\n<b>📌 주요 기사 링크:</b>\n"
-            # 링크도 너무 길어지지 않게 최대 5개까만 노출
             for item in collected_articles[:5]:
                 safe_title = html.escape(item['title'])
                 message += f"• <a href='{item['link']}'>{safe_title}</a>\n"
     else:
-        message = "🚨 <b>[실시간 신규 뉴스 및 링크 모음]</b>\n\n"
-        for item in collected_articles[:5]:
+        message = "🚨 <b>[실시간 신규 뉴스 모음 (일시적 AI 한도 초과 대체)]</b>\n\n"
+        for item in collected_articles[:10]:
             safe_title = html.escape(item['title'])
             safe_kw = html.escape(item['keyword'])
             message += f"<b>[{safe_kw}]</b> {safe_title}\n🔗 <a href='{item['link']}'>기사 보기</a>\n\n"
@@ -241,7 +252,7 @@ def main():
             for item in collected_articles:
                 sent_links.add(item['link'])
             save_sent_links(sent_links)
-        print(f"🎉 {current_run}회차 통합 리포트 발송 완료했습니다.")
+        print(f"🎉 {current_run}회차 리포트 발송 완료했습니다.")
 
 if __name__ == '__main__':
     main()
