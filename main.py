@@ -1,20 +1,24 @@
 import os
-import sys
 import json
-import time
 import html
 import urllib.request
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
+from flask import Flask, request, abort
 from google import genai
+
+app = Flask(__name__)
 
 # 1. 환경 변수에서 설정값 불러오기
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 2. 감시할 키워드 목록 (요청하신 전체 키워드 반영)
+# 🔒 cron-job.org만 알 수 있는 나만의 비밀 열쇠 (원하는 영어/숫자로 변경 가능)
+CRON_SECRET_KEY = os.environ.get("CRON_SECRET_KEY", "my_secret_key_1234")
+
+# 2. 감시할 키워드 목록
 KEYWORDS = [
     "삼성전자", "AI", "반도체", "증권", "부동산",
     "금리", "주식", "현대차", "SK하이닉스", "배터리", "2차전지",
@@ -28,9 +32,9 @@ KEYWORDS = [
 ]
 
 SENT_LINKS_FILE = "sent_links.txt"
+RUN_COUNT_FILE = "run_count.txt"
 
 def mask_sensitive_info(text):
-    """로그에 민감한 정보(토큰 등)가 노출되지 않도록 마스킹"""
     if not text:
         return text
     if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN in text:
@@ -38,6 +42,22 @@ def mask_sensitive_info(text):
     if GEMINI_API_KEY and GEMINI_API_KEY in text:
         text = text.replace(GEMINI_API_KEY, "[SECRET_KEY]")
     return text
+
+def load_run_count():
+    if os.path.exists(RUN_COUNT_FILE):
+        try:
+            with open(RUN_COUNT_FILE, "r", encoding="utf-8") as f:
+                return int(f.read().strip())
+        except Exception:
+            pass
+    return 0
+
+def save_run_count(count):
+    try:
+        with open(RUN_COUNT_FILE, "w", encoding="utf-8") as f:
+            f.write(str(count))
+    except Exception:
+        pass
 
 def load_sent_links():
     if os.path.exists(SENT_LINKS_FILE):
@@ -58,7 +78,6 @@ def save_sent_links(sent_links):
 
 def send_telegram_msg(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ 텔레그램 설정값이 없습니다.")
         return False
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -76,12 +95,10 @@ def send_telegram_msg(text):
         with urllib.request.urlopen(req, timeout=10) as response:
             return True
     except Exception as e:
-        safe_err = mask_sensitive_info(str(e))
-        print(f"❌ 텔레그램 발송 오류: {safe_err}")
+        print(f"❌ 텔레그램 발송 오류: {mask_sensitive_info(str(e))}")
         return False
 
 def fetch_rss_news(keyword):
-    """최근 15분 이내 뉴스만 수집"""
     encoded_keyword = urllib.parse.quote(keyword)
     rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
     
@@ -109,7 +126,7 @@ def fetch_rss_news(keyword):
                         pub_formatted = dt.strftime("%H:%M")
                         time_diff_seconds = (now_kst - dt).total_seconds()
                         
-                        if 0 <= time_diff_seconds <= 900:  # 15분 이내
+                        if 0 <= time_diff_seconds <= 900:
                             is_within_15_min = True
                     except Exception:
                         pass
@@ -139,15 +156,12 @@ def fetch_rss_news(keyword):
                         'pub_time': pub_formatted
                     })
     except Exception as e:
-        safe_err = mask_sensitive_info(str(e))
-        print(f"❌ [{keyword}] 뉴스 수집 실패: {safe_err}")
+        print(f"❌ [{keyword}] 뉴스 수집 실패: {mask_sensitive_info(str(e))}")
         
     return articles
 
-def generate_ai_briefing(articles_list):
-    """Gemini 모델을 사용하여 브리핑 작성"""
+def generate_ai_briefing(articles_list, is_odd_turn):
     if not GEMINI_API_KEY:
-        print("⚠️ GEMINI_API_KEY가 없어 기본 목록 형태로 발송합니다.")
         return None
 
     news_text_block = ""
@@ -155,7 +169,9 @@ def generate_ai_briefing(articles_list):
         safe_src = html.escape(item['source'])
         news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({safe_src}, {item['pub_time']})\n"
 
-    prompt = f"""
+    if is_odd_turn:
+        # 홀수 회차: 뉴스 브리핑 + 핵심 요약 + 테마 및 섹터 정리
+        prompt = f"""
 다음은 방금 수집된 실시간 뉴스 목록입니다.
 이 뉴스들을 바탕으로 텔레그램으로 보낼 '실시간 AI 뉴스 브리핑'을 작성해 주세요.
 
@@ -163,10 +179,23 @@ def generate_ai_briefing(articles_list):
 {news_text_block}
 
 [작성 조건]
-1. HTML 태그(<b>, <i> 등)를 적절히 활용하여 읽기 쉽게 가독성을 높일 것.
-2. 상단에 🤖 <b>[AI 실시간 뉴스 브리핑]</b> 제목을 붙일 것.
-3. 주요 뉴스들을 핵심 주제별로 2~3문장 내외로 명확하게 요약 정리할 것.
-4. 문맥이 매끄럽고 보고서처럼 인사이트를 줄 수 있도록 정리할 것.
+1. 상단에 🤖 <b>[AI 실시간 뉴스 브리핑 & 테마/섹터 분석]</b> 제목을 붙일 것.
+2. 수집된 뉴스들을 바탕으로 주요 소식을 테마와 섹터별로 묶어 정리할 것.
+3. 각 뉴스(또는 테마별 그룹)마다 **핵심 요약(2~3문장)**과 함께 해당 뉴스가 속한 **[테마] 및 [섹터]**를 명시할 것.
+4. HTML 태그(<b>, <i> 등)를 적극 활용하여 가독성을 높일 것.
+"""
+    else:
+        # 짝수 회차: 코스피 5개, 코스닥 5개 (대형주 제외, 일반 중소형주 수혜주 추천)
+        prompt = f"""
+다음은 최근 수집된 시장 뉴스 데이터입니다.
+이 데이터를 참고하여 현재 시점에서 주목할 만한 양호한 주식 종목을 추천해 주세요.
+
+[작성 조건]
+1. 상단에 📈 <b>[AI 중소형/일반주 수혜주 추천 리포트]</b> 제목을 붙일 것.
+2. **코스피 종목 5개**, **코스닥 종목 5개**를 선정할 것.
+3. **절대로 시가총액 상위 대형주(삼성전자, SK하이닉스, 현대차 등)는 제외**하고, 성장성 있는 **일반 중소형주 위주**로 선정할 것.
+4. 각 종목별로 간단한 추천 사유나 관련 수혜 모멘텀을 1~2문장으로 함께 기재할 것.
+5. HTML 태그(<b>, <i> 등)를 활용하여 가독성 좋게 작성할 것.
 """
 
     try:
@@ -177,17 +206,16 @@ def generate_ai_briefing(articles_list):
         )
         return response.text
     except Exception as e:
-        safe_err = mask_sensitive_info(str(e))
-        print(f"❌ Gemini AI 요약 생성 실패: {safe_err}")
+        print(f"❌ Gemini AI 콘텐츠 생성 실패: {mask_sensitive_info(str(e))}")
         return None
 
-def main():
-    print("🚀 실시간 뉴스 수집 및 AI 브리핑 로봇 실행...")
-    
-    # 필수 환경 변수 점검
+def run_news_bot():
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("🚨 필수 보안 설정: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다.")
-        return
+        return "환경 변수 누락"
+
+    current_run = load_run_count() + 1
+    save_run_count(current_run)
+    is_odd_turn = (current_run % 2 != 0)
 
     sent_links = load_sent_links()
     collected_articles = []
@@ -198,17 +226,18 @@ def main():
             if article['link'] not in sent_links:
                 collected_articles.append(article)
 
-    if not collected_articles:
-        print("ℹ️ 최근 15분 이내 신규 뉴스가 없습니다.")
-        return
+    if not collected_articles and is_odd_turn:
+        return f"{current_run}회차: 신규 뉴스 없음"
 
-    ai_briefing = generate_ai_briefing(collected_articles)
+    ai_content = generate_ai_briefing(collected_articles, is_odd_turn)
     
-    if ai_briefing:
-        message = ai_briefing + "\n\n<b>📌 관련 기사 링크:</b>\n"
-        for item in collected_articles:
-            safe_title = html.escape(item['title'])
-            message += f"• <a href='{item['link']}'>{safe_title}</a>\n"
+    if ai_content:
+        message = ai_content
+        if is_odd_turn and collected_articles:
+            message += "\n\n<b>📌 관련 기사 링크:</b>\n"
+            for item in collected_articles:
+                safe_title = html.escape(item['title'])
+                message += f"• <a href='{item['link']}'>{safe_title}</a>\n"
     else:
         message = "🚨 <b>[실시간 신규 뉴스 모음]</b>\n\n"
         for item in collected_articles:
@@ -217,10 +246,22 @@ def main():
             message += f"<b>[{safe_kw}]</b> {safe_title}\n🔗 <a href='{item['link']}'>기사 보기</a>\n\n"
 
     if send_telegram_msg(message):
-        for item in collected_articles:
-            sent_links.add(item['link'])
-        save_sent_links(sent_links)
-        print(f"🎉 총 {len(collected_articles)}건의 뉴스를 브리핑하여 발송 완료했습니다.")
+        if collected_articles:
+            for item in collected_articles:
+                sent_links.add(item['link'])
+            save_sent_links(sent_links)
+        return f"{current_run}회차 발송 성공!"
+    return "텔레그램 발송 실패"
 
-if __name__ == "__main__":
-    main()
+# 🌐 cron-job.org가 접속할 웹 주소 경로
+@app.route('/run')
+def trigger_bot():
+    user_key = request.args.get('key')
+    if user_key != CRON_SECRET_KEY:
+        abort(403)
+        
+    result = run_news_bot()
+    return f"OK - {result}", 200
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
