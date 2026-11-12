@@ -154,7 +154,7 @@ def fetch_rss_news(keyword):
         
     return articles
 
-def generate_ai_briefing(articles_list, is_odd_turn):
+def generate_ai_integrated_report(articles_list):
     if not GEMINI_API_KEY:
         return None
 
@@ -163,37 +163,31 @@ def generate_ai_briefing(articles_list, is_odd_turn):
         safe_src = html.escape(item['source'])
         news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({safe_src}, {item['pub_time']})\n"
 
-    if is_odd_turn:
-        prompt = f"""
-다음은 방금 수집된 실시간 뉴스 목록입니다.
-이 뉴스들을 바탕으로 텔레그램으로 보낼 '실시간 AI 뉴스 브리핑'을 작성해 주세요.
+    prompt = f"""
+다음은 방금 수집된 실시간 시장 뉴스 목록입니다. 이 데이터를 바탕으로 종합적인 실시간 투자 브리핑 리포트를 작성해 주세요.
 
 [뉴스 목록]
 {news_text_block}
 
 [작성 조건]
-1. 상단에 🤖 <b>[AI 실시간 뉴스 브리핑 & 테마/섹터 분석]</b> 제목을 붙일 것.
-2. 수집된 뉴스들을 테마와 섹터별로 묶어 정리할 것.
-3. 각 뉴스(또는 테마별 그룹)마다 **핵심 요약(2~3문장)**과 함께 해당 뉴스가 속한 **[테마] 및 [섹터]**를 명시할 것.
-4. HTML 태그(<b>, <i> 등)를 적극 활용하여 가독성을 높일 것.
-"""
-    else:
-        prompt = f"""
-다음은 최근 수집된 시장 뉴스 데이터입니다.
-이 데이터를 참고하여 현재 시점에서 주목할 만한 양호한 주식 종목을 추천해 주세요.
-
-[작성 조건]
-1. 상단에 📈 <b>[AI 중소형/일반주 수혜주 추천 리포트]</b> 제목을 붙일 것.
-2. **코스피 종목 5개**, **코스닥 종목 5개**를 선정할 것.
-3. **절대로 시가총액 상위 대형주(삼성전자, SK하이닉스, 현대차 등)는 제외**하고, 성장성 있는 **일반 중소형주 위주**로 선정할 것.
-4. 각 종목별로 간단한 추천 사유나 관련 수혜 모멘텀을 1~2문장으로 함께 기재할 것.
-5. HTML 태그(<b>, <i> 등)를 활용하여 가독성 좋게 작성할 것.
+1. 상단에 🤖 <b>[AI 실시간 종합 뉴스 & 테마/섹터 분석 리포트]</b> 제목을 붙일 것.
+2. 수집된 뉴스를 바탕으로 핵심 이슈를 **[테마] 및 [섹터]**별로 분류하고, 각 이슈의 **핵심 요약(2~3문장)**을 작성할 것.
+3. 이어 하단에 📈 <b>[시장 수혜주 추천 (일반 중소형주 집중)]</b> 섹션을 추가할 것.
+4. **대형주(삼성전자, SK하이닉스, 현대차 등 시총 상위 최상위 종목)는 철저히 제외**하고, 성장성 있는 **일반 중소형주** 위주로 선정할 것.
+5. 종목 추천은 아래 구조로 정확히 분류하여 작성할 것:
+   - **[코스피 수혜주]** (총 10개)
+     - 1등주 (5개): 각 종목명 + 간단한 추천 사유
+     - 2등주 (5개): 각 종목명 + 간단한 추천 사유
+   - **[코스닥 수혜주]** (총 10개)
+     - 1등주 (5개): 각 종목명 + 간단한 추천 사유
+     - 2등주 (5개): 각 종목명 + 간단한 추천 사유
+6. 전체 내용에 HTML 태그(<b>, <i> 등)를 적극 활용하여 가독성을 높일 것.
 """
 
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model='gemini-3.6-flash',  # 👈 최신 표준 모델명으로 업데이트 완료
+            model='gemini-3.6-flash',
             contents=prompt,
         )
         return response.text
@@ -202,15 +196,14 @@ def generate_ai_briefing(articles_list, is_odd_turn):
         return None
 
 def main():
-    print("🚀 실시간 뉴스 수집 및 AI 브리핑 로봇 실행...")
+    print("🚀 실시간 뉴스 수집 및 통합 AI 리포트 로봇 실행...")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("🚨 필수 보안 설정: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다.")
         return
 
     current_run = load_run_count() + 1
     save_run_count(current_run)
-    is_odd_turn = (current_run % 2 != 0)
-    print(f"ℹ️ 현재 실행 회차: {current_run}회차 ({'홀수 - 뉴스 브리핑' if is_odd_turn else '짝수 - 수혜주 추천'})")
+    print(f"ℹ️ 현재 실행 회차: {current_run}회차")
 
     sent_links = load_sent_links()
     collected_articles = []
@@ -221,21 +214,21 @@ def main():
             if article['link'] not in sent_links:
                 collected_articles.append(article)
 
-    if not collected_articles and is_odd_turn:
+    if not collected_articles:
         print("ℹ️ 최근 15분 이내 신규 뉴스가 없습니다.")
         return
 
-    ai_content = generate_ai_briefing(collected_articles, is_odd_turn)
+    ai_content = generate_ai_integrated_report(collected_articles)
     
     if ai_content:
         message = ai_content
-        if is_odd_turn and collected_articles:
-            message += "\n\n<b>📌 관련 기사 링크:</b>\n"
+        if collected_articles:
+            message += "\n\n<b>📌 관련 기사 링크 모음:</b>\n"
             for item in collected_articles:
                 safe_title = html.escape(item['title'])
                 message += f"• <a href='{item['link']}'>{safe_title}</a>\n"
     else:
-        message = "🚨 <b>[실시간 신규 뉴스 모음]</b>\n\n"
+        message = "🚨 <b>[실시간 신규 뉴스 및 링크 모음]</b>\n\n"
         for item in collected_articles:
             safe_title = html.escape(item['title'])
             safe_kw = html.escape(item['keyword'])
@@ -246,7 +239,7 @@ def main():
             for item in collected_articles:
                 sent_links.add(item['link'])
             save_sent_links(sent_links)
-        print(f"🎉 {current_run}회차 메시지 발송 완료했습니다.")
+        print(f"🎉 {current_run}회차 통합 리포트 발송 완료했습니다.")
 
 if __name__ == '__main__':
     main()
