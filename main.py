@@ -9,29 +9,52 @@ from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from google import genai
 
-# 1. Secrets에서 설정값 불러오기
+# 1. 환경 변수에서 설정값 불러오기
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 2. 감시할 키워드 목록
+# 2. 감시할 키워드 목록 (요청하신 전체 키워드 반영)
 KEYWORDS = [
     "삼성전자", "AI", "반도체", "증권", "부동산",
-    "금리", "주식", "현대차", "SK하이닉스", "배터리"
+    "금리", "주식", "현대차", "SK하이닉스", "배터리", "2차전지",
+    "한국항공우주", "방산", "원전", "조선",
+    "금", "구리", "통신", "보안", "해킹", "보안주",
+    "전쟁", "에너지", "화학", "뷰티", "화장품",
+    "제약주", "바이오", "데이터 센터", "데이터 센타",
+    "트럼프 대통령", "젠슨황", "엔비디아",
+    "항공", "유가", "유류", "석유", "수혜",
+    "피지컬 AI", "로봇", "게임", "온라인 게임"
 ]
 
 SENT_LINKS_FILE = "sent_links.txt"
 
+def mask_sensitive_info(text):
+    """로그에 민감한 정보(토큰 등)가 노출되지 않도록 마스킹"""
+    if not text:
+        return text
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN in text:
+        text = text.replace(TELEGRAM_BOT_TOKEN, "[SECRET_TOKEN]")
+    if GEMINI_API_KEY and GEMINI_API_KEY in text:
+        text = text.replace(GEMINI_API_KEY, "[SECRET_KEY]")
+    return text
+
 def load_sent_links():
     if os.path.exists(SENT_LINKS_FILE):
-        with open(SENT_LINKS_FILE, "r", encoding="utf-8") as f:
-            return set(line.strip() for line in f if line.strip())
+        try:
+            with open(SENT_LINKS_FILE, "r", encoding="utf-8") as f:
+                return set(line.strip() for line in f if line.strip())
+        except Exception:
+            pass
     return set()
 
 def save_sent_links(sent_links):
-    with open(SENT_LINKS_FILE, "w", encoding="utf-8") as f:
-        for link in sent_links:
-            f.write(f"{link}\n")
+    try:
+        with open(SENT_LINKS_FILE, "w", encoding="utf-8") as f:
+            for link in sent_links:
+                f.write(f"{link}\n")
+    except Exception:
+        print("❌ 전송 기록 저장 오류 발생")
 
 def send_telegram_msg(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -53,7 +76,8 @@ def send_telegram_msg(text):
         with urllib.request.urlopen(req, timeout=10) as response:
             return True
     except Exception as e:
-        print(f"❌ 텔레그램 발송 오류: {e}")
+        safe_err = mask_sensitive_info(str(e))
+        print(f"❌ 텔레그램 발송 오류: {safe_err}")
         return False
 
 def fetch_rss_news(keyword):
@@ -61,7 +85,7 @@ def fetch_rss_news(keyword):
     encoded_keyword = urllib.parse.quote(keyword)
     rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
     
-    req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
+    req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0 (SecureNewsBot/1.0)'})
     articles = []
     kst = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst)
@@ -115,19 +139,21 @@ def fetch_rss_news(keyword):
                         'pub_time': pub_formatted
                     })
     except Exception as e:
-        print(f"❌ [{keyword}] 뉴스 수집 실패: {e}")
+        safe_err = mask_sensitive_info(str(e))
+        print(f"❌ [{keyword}] 뉴스 수집 실패: {safe_err}")
         
     return articles
 
 def generate_ai_briefing(articles_list):
-    """Gemini 3.6 Flash 모델을 사용하여 브리핑 작성"""
+    """Gemini 모델을 사용하여 브리핑 작성"""
     if not GEMINI_API_KEY:
         print("⚠️ GEMINI_API_KEY가 없어 기본 목록 형태로 발송합니다.")
         return None
 
     news_text_block = ""
     for idx, item in enumerate(articles_list, 1):
-        news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({item['source']}, {item['pub_time']})\n"
+        safe_src = html.escape(item['source'])
+        news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({safe_src}, {item['pub_time']})\n"
 
     prompt = f"""
 다음은 방금 수집된 실시간 뉴스 목록입니다.
@@ -145,18 +171,24 @@ def generate_ai_briefing(articles_list):
 
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        # 최신 지정 표준 모델명 'gemini-3.6-flash' 사용
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
         )
         return response.text
     except Exception as e:
-        print(f"❌ Gemini AI 요약 생성 실패: {e}")
+        safe_err = mask_sensitive_info(str(e))
+        print(f"❌ Gemini AI 요약 생성 실패: {safe_err}")
         return None
 
 def main():
     print("🚀 실시간 뉴스 수집 및 AI 브리핑 로봇 실행...")
+    
+    # 필수 환경 변수 점검
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("🚨 필수 보안 설정: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다.")
+        return
+
     sent_links = load_sent_links()
     collected_articles = []
     
