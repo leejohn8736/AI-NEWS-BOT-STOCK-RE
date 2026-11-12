@@ -1,32 +1,43 @@
-name: End-of-day-betting Bot
+name: Realtime News Notification Bot
 
 on:
-  schedule:
-    # 한국 시간 기준 월~금 15:10, 17:10, 18:10 자동 실행 (UTC 기준 06:10, 08:10, 09:10)
-    - cron: "10 6,8,9 * * 1-5"
-  workflow_dispatch: # 깃허브 웹 화면에서 수동 [Run workflow] 버튼으로도 테스트 가능
+  workflow_dispatch: # <--- 이 코드가 있어야 'Run workflow' 버튼이 생깁니다!
+  repository_dispatch:
+    types: [wake_up]
 
 jobs:
-  run-screener:
+  run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Checkout repository
+      - name: 저장소 코드 가져오기
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 파이썬 환경 설정
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
+          python-version: '3.11'
 
-      - name: Install dependencies
+      - name: 필요 라이브러리 설치
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests beautifulsoup4 curl_cffi google-genai
 
-      - name: Run Theme Screener and Send Telegram Alert
+      - name: 뉴스 크롤러 실행 및 텔레그램 발송
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python main.py
+
+      - name: 발송 기록 자동 저장 (중복 발송 차단)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add sent_links.txt || true
+          git commit -m "update sent_links [skip ci]" || echo "No changes to commit"
+          git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git HEAD:main || true
