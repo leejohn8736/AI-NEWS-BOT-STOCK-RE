@@ -4,3 +4,5 @@ requests
 beautifulsoup4
 numpy
 yfinance
+flask
+google-genai
