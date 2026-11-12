@@ -193,7 +193,7 @@ def generate_ai_briefing(articles_list, is_odd_turn):
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',  # 👈 최신 표준 모델명으로 업데이트 완료
             contents=prompt,
         )
         return response.text
