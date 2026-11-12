@@ -124,7 +124,8 @@ def fetch_rss_news(keyword):
                         pub_formatted = dt.strftime("%H:%M")
                         time_diff_seconds = (now_kst - dt).total_seconds()
                         
-                        if 0 <= time_diff_seconds <= 900:
+                        # 60분 간격 실행에 맞춰 수집 범위(직전 65분 이내 뉴스) 설정
+                        if 0 <= time_diff_seconds <= 3900:
                             is_within_15_min = True
                     except Exception:
                         pass
@@ -206,10 +207,10 @@ def main():
     end_minutes = 23 * 60 + 50      # 밤 11시 50분 (1430분)
 
     if not (start_minutes <= current_total_minutes <= end_minutes):
-        print(f"😴 현재 시각({now_kst.strftime('%H:%M')})은 설정된 운영 시간(04:00 ~ 23:50)이 아닙니다. 대기합니다.")
+        print(f"😴 현재 시각({now_kst.strftime('%H:%M')})은 운영 시간(04:00 ~ 23:50)이 아닙니다. 대기합니다.")
         return
 
-    print("🚀 실시간 뉴스 수집 및 통합 AI 리포트 로봇 실행...")
+    print("🚀 실시간 뉴스 수집 및 통합 AI 리포트 로봇 실행 (60분 주기)...")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("🚨 필수 보안 설정: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다.")
         return
@@ -228,7 +229,7 @@ def main():
                 collected_articles.append(article)
 
     if not collected_articles:
-        print("ℹ️ 최근 15분 이내 신규 뉴스가 없습니다.")
+        print("ℹ️ 최근 1시간 이내 신규 뉴스가 없습니다.")
         return
 
     ai_content = generate_ai_integrated_report(collected_articles)
