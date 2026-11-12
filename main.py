@@ -1,6 +1,7 @@
 import os
 import json
 import html
+import random
 import urllib.request
 import urllib.parse
 from datetime import datetime, timezone, timedelta
@@ -12,17 +13,17 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 2. 감시할 키워드 목록
+# 2. 감시할 키워드 목록 (유사 키워드가 서로 멀리 떨어지도록 분산 배치)
 KEYWORDS = [
-    "삼성전자", "AI", "반도체", "증권", "부동산",
-    "금리", "주식", "현대차", "SK하이닉스", "배터리", "2차전지",
-    "한국항공우주", "방산", "원전", "조선",
-    "금", "구리", "통신", "보안", "해킹", "보안주",
-    "전쟁", "에너지", "화학", "뷰티", "화장품",
-    "제약주", "바이오", "데이터 센터", "데이터 센타",
-    "트럼프 대통령", "젠슨황", "엔비디아",
-    "항공", "유가", "유류", "석유", "수혜",
-    "피지컬 AI", "로봇", "게임", "온라인 게임"
+    "삼성전자", "증권", "금", "전쟁", "항공",
+    "AI", "부동산", "구리", "에너지", "유가",
+    "생성형 AI", "금리", "통신", "화학", "석유",
+    "AI 반도체", "주식", "보안", "뷰티", "수혜",
+    "인공지능", "현대차", "해킹", "화장품", "로봇",
+    "반도체", "SK하이닉스", "제약주", "트럼프 대통령", "게임",
+    "배터리", "한국항공우주", "바이오", "젠슨황",
+    "2차전지", "방산", "데이터 센터", "엔비디아",
+    "원전", "조선"
 ]
 
 SENT_LINKS_FILE = "sent_links.txt"
@@ -115,7 +116,7 @@ def fetch_rss_news(keyword):
                 if '<pubDate>' in item and '</pubDate>' in item:
                     pub_date_str = item.split('<pubDate>')[1].split('</pubDate>')[0].strip()
                 
-                is_within_15_min = False
+                is_within_time_range = False
                 pub_formatted = ""
                 
                 if pub_date_str:
@@ -124,13 +125,13 @@ def fetch_rss_news(keyword):
                         pub_formatted = dt.strftime("%H:%M")
                         time_diff_seconds = (now_kst - dt).total_seconds()
                         
-                        # 60분 간격 실행에 맞춰 수집 범위(직전 65분 이내 뉴스) 설정
+                        # 최근 65분 이내 뉴스 수집
                         if 0 <= time_diff_seconds <= 3900:
-                            is_within_15_min = True
+                            is_within_time_range = True
                     except Exception:
                         pass
                 
-                if not is_within_15_min:
+                if not is_within_time_range:
                     continue
 
                 title = ""
@@ -146,7 +147,7 @@ def fetch_rss_news(keyword):
                 if '<source' in item and '</source>' in item:
                     source = item.split('>')[1].split('</source>')[0].strip()
 
-                if keyword in title and link:
+                if link:
                     articles.append({
                         'keyword': keyword,
                         'title': title,
@@ -164,19 +165,19 @@ def generate_ai_integrated_report(articles_list):
         return None
 
     news_text_block = ""
-    for idx, item in enumerate(articles_list[:12], 1):
+    for idx, item in enumerate(articles_list[:15], 1):
         safe_src = html.escape(item['source'])
         news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({safe_src}, {item['pub_time']})\n"
 
     prompt = f"""
-다음은 수집된 실시간 시장 뉴스 목록입니다. 이 데이터를 바탕으로 간결하고 핵심만 담긴 투자 브리핑 리포트를 작성해 주세요.
+다음은 다양한 분야에서 수집된 실시간 시장 뉴스 목록입니다. 이 데이터를 바탕으로 간결하고 핵심만 담긴 투자 브리핑 리포트를 작성해 주세요.
 
 [뉴스 목록]
 {news_text_block}
 
 [작성 조건]
 1. 상단에 🤖 <b>[AI 실시간 뉴스 & 테마/섹터 분석]</b> 제목을 붙일 것.
-2. 핵심 이슈를 **[테마] 및 [섹터]**별로 간단히 요약할 것.
+2. 특정 테마에 치우치지 말고 AI, 반도체, 바이오, 방산, 증권 등 다양한 분야의 핵심 이슈를 골고루 **[테마] 및 [섹터]**별로 요약할 것.
 3. 하단에 📈 <b>[시장 수혜주 추천]</b> 섹션을 추가할 것.
 4. 시가총액 상위 대형주는 철저히 제외하고, 성장성 있는 일반 중소형주 위주로 선정할 것:
    - **[코스피 수혜주]** (총 10개: 1등주 5개, 2등주 5개)
@@ -210,7 +211,7 @@ def main():
         print(f"😴 현재 시각({now_kst.strftime('%H:%M')})은 운영 시간(04:00 ~ 23:50)이 아닙니다. 대기합니다.")
         return
 
-    print("🚀 실시간 뉴스 수집 및 통합 AI 리포트 로봇 실행 (60분 주기)...")
+    print("🚀 실시간 뉴스 수집 및 통합 AI 리포트 로봇 실행...")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("🚨 필수 보안 설정: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다.")
         return
@@ -222,15 +223,24 @@ def main():
     sent_links = load_sent_links()
     collected_articles = []
     
-    for keyword in KEYWORDS:
+    # 💡 키워드 순서를 매번 무작위로 한 번 더 섞어서 쏠림 현상 방지
+    shuffled_keywords = list(KEYWORDS)
+    random.shuffle(shuffled_keywords)
+
+    # 키워드별로 뉴스를 수집하되, 키워드당 최대 1개씩 골고루 수집
+    for keyword in shuffled_keywords:
         articles = fetch_rss_news(keyword)
         for article in articles:
             if article['link'] not in sent_links:
                 collected_articles.append(article)
+                break
 
     if not collected_articles:
         print("ℹ️ 최근 1시간 이내 신규 뉴스가 없습니다.")
         return
+
+    # 수집된 기사들도 무작위로 섞어 최종 다양성 확보
+    random.shuffle(collected_articles)
 
     ai_content = generate_ai_integrated_report(collected_articles)
     
@@ -240,7 +250,8 @@ def main():
             message += "\n\n<b>📌 주요 기사 링크:</b>\n"
             for item in collected_articles[:5]:
                 safe_title = html.escape(item['title'])
-                message += f"• <a href='{item['link']}'>{safe_title}</a>\n"
+                safe_kw = html.escape(item['keyword'])
+                message += f"• [{safe_kw}] <a href='{item['link']}'>{safe_title}</a>\n"
     else:
         message = "🚨 <b>[실시간 신규 뉴스 모음 (일시적 AI 한도 초과 대체)]</b>\n\n"
         for item in collected_articles[:10]:
