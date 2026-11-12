@@ -1,9 +1,7 @@
 name: 실시간 키워드 뉴스
 
 on:
-  schedule:
-    - cron: '*/71 * * * *' # ⏱️ 71분마다 자동 실행
-  workflow_dispatch: # 👈 수동 실행 버튼
+  workflow_dispatch: # <--- 수동 실행 버튼
   repository_dispatch:
     types: [wake_up]
 
