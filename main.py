@@ -75,6 +75,11 @@ def send_telegram_msg(text):
         return False
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    
+    # 텔레그램 글자 수 제한(4096자) 방어를 위해 3800자로 자름
+    if len(text) > 3800:
+        text = text[:3800] + "\n\n...(내용이 길어 생략됩니다)"
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
@@ -159,29 +164,25 @@ def generate_ai_integrated_report(articles_list):
         return None
 
     news_text_block = ""
-    for idx, item in enumerate(articles_list, 1):
+    # 너무 많은 뉴스가 들어가면 글자 수가 초과되므로 상위 15개만 추려서 전달
+    for idx, item in enumerate(articles_list[:15], 1):
         safe_src = html.escape(item['source'])
         news_text_block += f"{idx}. [{item['keyword']}] {item['title']} ({safe_src}, {item['pub_time']})\n"
 
     prompt = f"""
-다음은 방금 수집된 실시간 시장 뉴스 목록입니다. 이 데이터를 바탕으로 종합적인 실시간 투자 브리핑 리포트를 작성해 주세요.
+다음은 수집된 실시간 시장 뉴스 목록입니다. 이 데이터를 바탕으로 간결하고 핵심만 담긴 투자 브리핑 리포트를 작성해 주세요.
 
 [뉴스 목록]
 {news_text_block}
 
 [작성 조건]
-1. 상단에 🤖 <b>[AI 실시간 종합 뉴스 & 테마/섹터 분석 리포트]</b> 제목을 붙일 것.
-2. 수집된 뉴스를 바탕으로 핵심 이슈를 **[테마] 및 [섹터]**별로 분류하고, 각 이슈의 **핵심 요약(2~3문장)**을 작성할 것.
-3. 이어 하단에 📈 <b>[시장 수혜주 추천 (일반 중소형주 집중)]</b> 섹션을 추가할 것.
-4. **대형주(삼성전자, SK하이닉스, 현대차 등 시총 상위 최상위 종목)는 철저히 제외**하고, 성장성 있는 **일반 중소형주** 위주로 선정할 것.
-5. 종목 추천은 아래 구조로 정확히 분류하여 작성할 것:
-   - **[코스피 수혜주]** (총 10개)
-     - 1등주 (5개): 각 종목명 + 간단한 추천 사유
-     - 2등주 (5개): 각 종목명 + 간단한 추천 사유
-   - **[코스닥 수혜주]** (총 10개)
-     - 1등주 (5개): 각 종목명 + 간단한 추천 사유
-     - 2등주 (5개): 각 종목명 + 간단한 추천 사유
-6. 전체 내용에 HTML 태그(<b>, <i> 등)를 적극 활용하여 가독성을 높일 것.
+1. 상단에 🤖 <b>[AI 실시간 뉴스 & 테마/섹터 분석]</b> 제목을 붙일 것.
+2. 핵심 이슈를 **[테마] 및 [섹터]**별로 간단히 요약할 것.
+3. 하단에 📈 <b>[시장 수혜주 추천]</b> 섹션을 추가할 것.
+4. 대형주는 제외하고 일반 중소형주 위주로 선정할 것:
+   - **[코스피 수혜주]** (총 10개: 1등주 5개, 2등주 5개 - 종목명 위주로 간결하게)
+   - **[코스닥 수혜주]** (총 10개: 1등주 5개, 2등주 5개 - 종목명 위주로 간결하게)
+5. 텔레그램 전송용이므로 전체 분량이 너무 길어지지 않게 핵심만 압축해서 작성할 것.
 """
 
     try:
@@ -223,13 +224,14 @@ def main():
     if ai_content:
         message = ai_content
         if collected_articles:
-            message += "\n\n<b>📌 관련 기사 링크 모음:</b>\n"
-            for item in collected_articles:
+            message += "\n\n<b>📌 주요 기사 링크:</b>\n"
+            # 링크도 너무 길어지지 않게 최대 5개까만 노출
+            for item in collected_articles[:5]:
                 safe_title = html.escape(item['title'])
                 message += f"• <a href='{item['link']}'>{safe_title}</a>\n"
     else:
         message = "🚨 <b>[실시간 신규 뉴스 및 링크 모음]</b>\n\n"
-        for item in collected_articles:
+        for item in collected_articles[:5]:
             safe_title = html.escape(item['title'])
             safe_kw = html.escape(item['keyword'])
             message += f"<b>[{safe_kw}]</b> {safe_title}\n🔗 <a href='{item['link']}'>기사 보기</a>\n\n"
