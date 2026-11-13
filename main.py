@@ -13,7 +13,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 2. 감시할 키워드 목록 (유사 키워드가 서로 멀리 떨어지도록 분산 배치)
+# 2. 감시할 키워드 목록
 KEYWORDS = [
     "삼성전자", "증권", "금", "전쟁", "항공",
     "AI", "부동산", "구리", "에너지", "유가",
@@ -187,7 +187,7 @@ def generate_ai_integrated_report(articles_list):
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',  # 👈 안정적인 3.6-flash 모델로 변경
             contents=prompt,
         )
         return response.text
@@ -196,15 +196,14 @@ def generate_ai_integrated_report(articles_list):
         return None
 
 def main():
-    # 🕒 운영 시간 체크 (새벽 4시 ~ 밤 11시 50분 KST)
     kst = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst)
     current_hour = now_kst.hour
     current_minute = now_kst.minute
     current_total_minutes = current_hour * 60 + current_minute
 
-    start_minutes = 4 * 60          # 새벽 4시 (240분)
-    end_minutes = 23 * 60 + 50      # 밤 11시 50분 (1430분)
+    start_minutes = 4 * 60          # 새벽 4시
+    end_minutes = 23 * 60 + 50      # 밤 11시 50분
 
     if not (start_minutes <= current_total_minutes <= end_minutes):
         print(f"😴 현재 시각({now_kst.strftime('%H:%M')})은 운영 시간(04:00 ~ 23:50)이 아닙니다. 대기합니다.")
@@ -241,7 +240,7 @@ def main():
     success_all = False
 
     if is_odd:
-        # [홀수 회차]: AI 호출 없이 순수 기사 및 링크 목록만 단일 발송
+        # [홀수 회차]: 순수 기사 및 링크 목록 단일 발송
         message = f"🚨 <b>[실시간 신규 뉴스 모음 ({current_run}회차)]</b>\n\n"
         for item in collected_articles[:10]:
             safe_title = html.escape(item['title'])
@@ -250,7 +249,7 @@ def main():
         
         success_all = send_telegram_msg(message)
     else:
-        # [짝수 회차]: Gemini AI를 활용한 종합 리포트 생성 및 2분할 발송
+        # [짝수 회차]: Gemini AI 종합 리포트 생성 및 2분할 발송
         ai_content = generate_ai_integrated_report(collected_articles)
         
         if ai_content:
@@ -264,7 +263,6 @@ def main():
                 part1_text = f"🤖 <b>[AI 실시간 뉴스 & 테마/섹터 분석 ({current_run}회차 - 1/2부)]</b>\n\n{ai_content[:mid_idx]}"
                 part2_text = f"📈 <b>[시장 수혜주 추천 및 상세 ({current_run}회차 - 2/2부)]</b>\n\n{ai_content[mid_idx:]}"
 
-            # 2부 하단에 주요 기사 링크 첨부
             if collected_articles:
                 part2_text += "\n\n<b>📌 주요 기사 링크:</b>\n"
                 for item in collected_articles[:5]:
@@ -280,7 +278,7 @@ def main():
                 if res2:
                     success_all = True
         else:
-            # AI 한도 초과 시 안전하게 대체 뉴스 모음 발송
+            # AI 실패 시 대체 뉴스 모음 발송
             message = f"🚨 <b>[실시간 신규 뉴스 모음 (일시적 AI 한도 초과 대체 / {current_run}회차)]</b>\n\n"
             for item in collected_articles[:10]:
                 safe_title = html.escape(item['title'])
