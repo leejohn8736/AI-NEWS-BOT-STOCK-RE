@@ -176,24 +176,23 @@ def generate_ai_integrated_report(articles_list):
 {news_text_block}
 
 [작성 조건]
-1. 상단에 🤖 <b>[AI 실시간 뉴스 & 테마/섹터 분석]</b> 제목을 붙일 것.
-2. 특정 테마에 치우치지 말고 AI, 반도체, 바이오, 방산, 증권 등 다양한 분야의 핵심 이슈를 골고루 **[테마] 및 [섹터]**별로 요약할 것.
-3. 하단에 📈 <b>[시장 수혜주 추천]</b> 섹션을 추가할 것.
-4. 시가총액 상위 대형주는 철저히 제외하고, 성장성 있는 일반 중소형주 위주로 선정할 것:
-   - **[코스피 수혜주]** (총 10개: 1등주 5개, 2등주 5개)
-   - **[코스닥 수혜주]** (총 10개: 1등주 5개, 2등주 5개)
-5. 텔레그램 전송용이므로 분량이 너무 길어지지 않게 핵심만 압축해서 작성할 것.
+1. 특정 테마에 치우치지 말고 AI, 반도체, 바이오, 방산, 증권 등 다양한 분야의 핵심 이슈를 골고루 **[테마] 및 [섹터]**별 동향과 포인트를 요약할 것.
+2. 하단에 📈 <b>[시장 수혜주 추천]</b> 섹션을 추가할 것.
+3. 시가총액 상위 대형주는 철저히 제외하고, 성장성 있는 일반 중소형주 위주로 선정할 것:
+   - **[코스피 수혜주]** (주도주/1등주 5개, 추격주/파생주 5개)
+   - **[코스닥 수혜주]** (주도주/1등주 5개, 추격주/파생주 5개)
+4. 텔레그램 전송용이므로 분량이 너무 길어지지 않게 핵심만 압축해서 작성할 것.
 """
 
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
         )
         return response.text
     except Exception as e:
-        print(f"⚠️ Gemini AI 호출 제한 또는 에러 발생 (기본 뉴스 모음으로 대체됩니다): {mask_sensitive_info(str(e))}")
+        print(f"⚠️ Gemini AI 호출 에러: {mask_sensitive_info(str(e))}")
         return None
 
 def main():
@@ -211,23 +210,22 @@ def main():
         print(f"😴 현재 시각({now_kst.strftime('%H:%M')})은 운영 시간(04:00 ~ 23:50)이 아닙니다. 대기합니다.")
         return
 
-    print("🚀 실시간 뉴스 수집 및 통합 AI 리포트 로봇 실행...")
+    print("🚀 실시간 뉴스 수집 및 홀수/짝수 분리 봇 실행...")
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("🚨 필수 보안 설정: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 환경 변수가 설정되지 않았습니다.")
         return
 
     current_run = load_run_count() + 1
     save_run_count(current_run)
-    print(f"ℹ️ 현재 실행 회차: {current_run}회차")
+    is_odd = (current_run % 2 != 0)
+    print(f"ℹ️ 현재 실행 회차: {current_run}회차 ({'홀수: 순수 기사/링크 모음' if is_odd else '짝수: AI 종합 리포트 2분할 발송'})")
 
     sent_links = load_sent_links()
     collected_articles = []
     
-    # 💡 키워드 순서를 매번 무작위로 한 번 더 섞어서 쏠림 현상 방지
     shuffled_keywords = list(KEYWORDS)
     random.shuffle(shuffled_keywords)
 
-    # 키워드별로 뉴스를 수집하되, 키워드당 최대 1개씩 골고루 수집
     for keyword in shuffled_keywords:
         articles = fetch_rss_news(keyword)
         for article in articles:
@@ -239,32 +237,73 @@ def main():
         print("ℹ️ 최근 1시간 이내 신규 뉴스가 없습니다.")
         return
 
-    # 수집된 기사들도 무작위로 섞어 최종 다양성 확보
     random.shuffle(collected_articles)
+    success_all = False
 
-    ai_content = generate_ai_integrated_report(collected_articles)
-    
-    if ai_content:
-        message = ai_content
-        if collected_articles:
-            message += "\n\n<b>📌 주요 기사 링크:</b>\n"
-            for item in collected_articles[:5]:
-                safe_title = html.escape(item['title'])
-                safe_kw = html.escape(item['keyword'])
-                message += f"• [{safe_kw}] <a href='{item['link']}'>{safe_title}</a>\n"
-    else:
-        message = "🚨 <b>[실시간 신규 뉴스 모음 (일시적 AI 한도 초과 대체)]</b>\n\n"
+    if is_odd:
+        # [홀수 회차]: AI 호출 없이 순수 기사 및 링크 목록만 단일 발송
+        message = f"🚨 <b>[실시간 신규 뉴스 모음 ({current_run}회차)]</b>\n\n"
         for item in collected_articles[:10]:
             safe_title = html.escape(item['title'])
             safe_kw = html.escape(item['keyword'])
             message += f"<b>[{safe_kw}]</b> {safe_title}\n🔗 <a href='{item['link']}'>기사 보기</a>\n\n"
+        
+        success_all = send_telegram_msg(message)
+    else:
+        # [짝수 회차]: Gemini AI를 활용한 종합 리포트 생성 및 2분할 발송
+        ai_content = generate_ai_integrated_report(collected_articles)
+        
+        if ai_content:
+            parts = ai_content.split("📈 <b>[시장 수혜주 추천]</b>")
+            
+            if len(parts) == 2:
+                part1_text = f"🤖 <b>[AI 실시간 뉴스 & 테마/섹터 분석 ({current_run}회차 - 1/2부)]</b>\n\n{parts[0].strip()}"
+                part2_text = f"📈 <b>[시장 수혜주 추천 및 상세 ({current_run}회차 - 2/2부)]</b>\n\n{parts[1].strip()}"
+            else:
+                mid_idx = len(ai_content) // 2
+                part1_text = f"🤖 <b>[AI 실시간 뉴스 & 테마/섹터 분석 ({current_run}회차 - 1/2부)]</b>\n\n{ai_content[:mid_idx]}"
+                part2_text = f"📈 <b>[시장 수혜주 추천 및 상세 ({current_run}회차 - 2/2부)]</b>\n\n{ai_content[mid_idx:]}"
 
-    if send_telegram_msg(message):
+            # 2부 하단에 주요 기사 링크 첨부
+            if collected_articles:
+                part2_text += "\n\n<b>📌 주요 기사 링크:</b>\n"
+                for item in collected_articles[:5]:
+                    safe_title = html.escape(item['title'])
+                    safe_kw = html.escape(item['keyword'])
+                    part2_text += f"• [{safe_kw}] <a href='{item['link']}'>{safe_title}</a>\n"
+
+            print("📤 짝수 회차 1부 전송 중...")
+            res1 = send_telegram_msg(part1_text)
+            if res1:
+                print("📤 짝수 회차 2부 전송 중...")
+                res2 = send_telegram_msg(part2_text)
+                if res2:
+                    success_all = True
+        else:
+            # AI 한도 초과 시 안전하게 대체 뉴스 모음 발송
+            message = f"🚨 <b>[실시간 신규 뉴스 모음 (일시적 AI 한도 초과 대체 / {current_run}회차)]</b>\n\n"
+            for item in collected_articles[:10]:
+                safe_title = html.escape(item['title'])
+                safe_kw = html.escape(item['keyword'])
+                message += f"<b>[{safe_kw}]</b> {safe_title}\n🔗 <a href='{item['link']}'>기사 보기</a>\n\n"
+            
+            if collected_articles:
+                message += "\n\n<b>📌 주요 기사 링크:</b>\n"
+                for item in collected_articles[:5]:
+                    safe_title = html.escape(item['title'])
+                    safe_kw = html.escape(item['keyword'])
+                    message += f"• [{safe_kw}] <a href='{item['link']}'>{safe_title}</a>\n"
+
+            success_all = send_telegram_msg(message)
+
+    if success_all:
         if collected_articles:
             for item in collected_articles:
                 sent_links.add(item['link'])
             save_sent_links(sent_links)
-        print(f"🎉 {current_run}회차 리포트 발송 완료했습니다.")
+        print(f"🎉 {current_run}회차({'홀수' if is_odd else '짝수'}) 발송 완료했습니다.")
+    else:
+        print("⚠️ 텔레그램 전송 중 오류가 발생했습니다.")
 
 if __name__ == '__main__':
     main()
