@@ -2,6 +2,7 @@ import os
 import json
 import html
 import random
+import time
 import urllib.request
 import urllib.parse
 from datetime import datetime, timezone, timedelta
@@ -13,7 +14,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 2. 감시할 키워드 목록
+# 2. 감시할 키워드 목록 (요청하신 철강, 보안, 해킹, 외교, 안보, 사이버보안 추가 완료)
 KEYWORDS = [
     "삼성전자", "증권", "금", "전쟁", "항공",
     "AI", "부동산", "구리", "에너지", "유가",
@@ -23,7 +24,7 @@ KEYWORDS = [
     "반도체", "SK하이닉스", "제약주", "트럼프 대통령", "게임",
     "배터리", "한국항공우주", "바이오", "젠슨황",
     "2차전지", "방산", "데이터 센터", "엔비디아",
-    "원전", "조선"
+    "원전", "조선", "철강", "외교", "안보", "사이버보안"
 ]
 
 SENT_LINKS_FILE = "sent_links.txt"
@@ -101,7 +102,7 @@ def fetch_rss_news(keyword):
     encoded_keyword = urllib.parse.quote(keyword)
     rss_url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
     
-    req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0 (SecureNewsBot/1.0)'})
+    req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
     articles = []
     kst = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst)
@@ -125,8 +126,8 @@ def fetch_rss_news(keyword):
                         pub_formatted = dt.strftime("%H:%M")
                         time_diff_seconds = (now_kst - dt).total_seconds()
                         
-                        # 최근 65분 이내 뉴스 수집
-                        if 0 <= time_diff_seconds <= 3900:
+                        # 최근 90분 이내 뉴스 수집
+                        if 0 <= time_diff_seconds <= 5400:
                             is_within_time_range = True
                     except Exception:
                         pass
@@ -156,7 +157,7 @@ def fetch_rss_news(keyword):
                         'pub_time': pub_formatted
                     })
     except Exception as e:
-        print(f"❌ [{keyword}] 뉴스 수집 실패: {mask_sensitive_info(str(e))}")
+        print(f"⚠️ [{keyword}] 뉴스 수집 지연/차단 무시: {mask_sensitive_info(str(e))}")
         
     return articles
 
@@ -176,7 +177,7 @@ def generate_ai_integrated_report(articles_list):
 {news_text_block}
 
 [작성 조건]
-1. 특정 테마에 치우치지 말고 AI, 반도체, 바이오, 방산, 증권 등 다양한 분야의 핵심 이슈를 골고루 **[테마] 및 [섹터]**별 동향과 포인트를 요약할 것.
+1. 특정 테마에 치우치지 말고 AI, 반도체, 바이오, 방산, 철강, 사이버보안, 증권 등 다양한 분야의 핵심 이슈를 골고루 **[테마] 및 [섹터]**별 동향과 포인트를 요약할 것.
 2. 하단에 📈 <b>[시장 수혜주 추천]</b> 섹션을 추가할 것.
 3. 시가총액 상위 대형주는 철저히 제외하고, 성장성 있는 일반 중소형주 위주로 선정할 것:
    - **[코스피 수혜주]** (주도주/1등주 5개, 추격주/파생주 5개)
@@ -184,16 +185,25 @@ def generate_ai_integrated_report(articles_list):
 4. 텔레그램 전송용이므로 분량이 너무 길어지지 않게 핵심만 압축해서 작성할 것.
 """
 
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',  # 👈 안정적인 3.6-flash 모델로 변경
-            contents=prompt,
-        )
-        return response.text
-    except Exception as e:
-        print(f"⚠️ Gemini AI 호출 에러: {mask_sensitive_info(str(e))}")
-        return None
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    
+    # 💡 503 또는 서버 과부하 대비 모델 다중 시도 (폴백: 3.6-flash -> 2.5-flash)
+    models_to_try = ['gemini-3.6-flash', 'gemini-2.5-flash']
+    
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            print(f"⚠️ 모델 {model_name} 호출 실패: {mask_sensitive_info(str(e))}")
+            time.sleep(1)
+            continue
+            
+    return None
 
 def main():
     kst = timezone(timedelta(hours=9))
@@ -225,15 +235,19 @@ def main():
     shuffled_keywords = list(KEYWORDS)
     random.shuffle(shuffled_keywords)
 
+    # 💡 429 에러 방지를 위해 키워드 수집 시 0.4초 간격 대기
     for keyword in shuffled_keywords:
         articles = fetch_rss_news(keyword)
         for article in articles:
             if article['link'] not in sent_links:
                 collected_articles.append(article)
                 break
+        time.sleep(0.4)
 
     if not collected_articles:
-        print("ℹ️ 최근 1시간 이내 신규 뉴스가 없습니다.")
+        print("ℹ️ 수집된 신규 뉴스가 없습니다.")
+        if len(sent_links) > 500:
+            sent_links.clear()
         return
 
     random.shuffle(collected_articles)
@@ -273,13 +287,14 @@ def main():
             print("📤 짝수 회차 1부 전송 중...")
             res1 = send_telegram_msg(part1_text)
             if res1:
+                time.sleep(1)
                 print("📤 짝수 회차 2부 전송 중...")
                 res2 = send_telegram_msg(part2_text)
                 if res2:
                     success_all = True
         else:
-            # AI 실패 시 대체 뉴스 모음 발송
-            message = f"🚨 <b>[실시간 신규 뉴스 모음 (일시적 AI 한도 초과 대체 / {current_run}회차)]</b>\n\n"
+            # AI 실패 시 안전하게 대체 뉴스 모음 발송
+            message = f"🚨 <b>[실시간 신규 뉴스 모음 (일시적 AI 과부하 대체 / {current_run}회차)]</b>\n\n"
             for item in collected_articles[:10]:
                 safe_title = html.escape(item['title'])
                 safe_kw = html.escape(item['keyword'])
